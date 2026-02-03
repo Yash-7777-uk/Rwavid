@@ -8,31 +8,23 @@ const REFERER = 'https://appx-play.akamai.net.in/';
 const ORIGIN  = 'https://appx-play.akamai.net.in';
 const HOST    = 'static-trans-v1.appx.co.in';
 
-/* ======================
-   XOR decrypt (28 bytes)
-====================== */
-function decrypt28(buffer, key) {
+function decrypt28(buf, key) {
   for (let i = 0; i < 28; i++) {
-    buffer[i] ^= (i < key.length ? key.charCodeAt(i) : i);
+    buf[i] ^= (i < key.length ? key.charCodeAt(i) : i);
   }
-  return buffer;
+  return buf;
 }
 
-/* ======================
-   MP4 STREAM PROXY
-====================== */
 app.get('/mp4', async (req, res) => {
   if (!req.query.url || !req.query.key) {
-    return res.status(400).end('Missing url or key');
+    return res.status(400).end('Missing params');
   }
 
-  // IMPORTANT: decode full signed URL
   const videoUrl = decodeURIComponent(req.query.url);
   const key = req.query.key;
 
-  res.status(206);
-  res.setHeader('Content-Type', 'video/mp4');
-  res.setHeader('Accept-Ranges', 'bytes');
+  // 🔑 VERY IMPORTANT: client range
+  const clientRange = req.headers.range || 'bytes=0-';
 
   try {
     const upstream = await axios({
@@ -43,30 +35,44 @@ app.get('/mp4', async (req, res) => {
         Referer: REFERER,
         Origin: ORIGIN,
         Host: HOST,
-        'User-Agent': 'Mozilla/5.0 (Linux; Android 13)',
+        Range: clientRange,
+        'User-Agent': 'Mozilla/5.0 (Android)'
       },
-      timeout: 0,                 // long streams safe
-      maxRedirects: 5,
-      validateStatus: () => true  // handle 403 manually
+      validateStatus: () => true
     });
 
     if (upstream.status === 403) {
-      console.error('Origin 403 blocked');
       return res.status(403).end('Origin blocked');
     }
 
+    // Forward important headers
+    res.status(upstream.status);
+    res.setHeader('Content-Type', 'video/mp4');
+    if (upstream.headers['content-range'])
+      res.setHeader('Content-Range', upstream.headers['content-range']);
+    if (upstream.headers['content-length'])
+      res.setHeader('Content-Length', upstream.headers['content-length']);
+    res.setHeader('Accept-Ranges', 'bytes');
+
+    // 🔓 Decrypt ONLY if starting from byte 0
+    const startFromZero = clientRange.startsWith('bytes=0');
+
+    if (!startFromZero) {
+      // normal seek → no decrypt
+      return upstream.data.pipe(res);
+    }
+
     let buffer = Buffer.alloc(0);
-    let decrypted = false;
+    let done = false;
 
     upstream.data.on('data', chunk => {
-      if (!decrypted) {
+      if (!done) {
         buffer = Buffer.concat([buffer, chunk]);
 
         if (buffer.length >= 28) {
-          const head = decrypt28(buffer.slice(0, 28), key);
-          res.write(head);
-          res.write(buffer.slice(28));
-          decrypted = true;
+          decrypt28(buffer, key);
+          res.write(buffer);
+          done = true;
         }
       } else {
         res.write(chunk);
@@ -76,19 +82,16 @@ app.get('/mp4', async (req, res) => {
     upstream.data.on('end', () => res.end());
     upstream.data.on('error', () => res.end());
 
-  } catch (err) {
-    console.error('Proxy error:', err.message);
+  } catch (e) {
+    console.error(e.message);
     res.end();
   }
 });
 
-/* ======================
-   ROOT (health check)
-====================== */
-app.get('/', (req, res) => {
-  res.send('VidProxy running OK');
+app.get('/', (_, res) => {
+  res.send('VidProxy OK');
 });
 
 app.listen(PORT, () => {
-  console.log(`VidProxy running on port ${PORT}`);
+  console.log('VidProxy running on', PORT);
 });
