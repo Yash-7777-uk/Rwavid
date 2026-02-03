@@ -13,18 +13,18 @@ app.get('/stream', async (req, res) => {
 
   try {
     // Check if it's an MP4 file
-    if (videoUrl.toLowerCase().endsWith('.mp4')) {
+    if (videoUrl.toLowerCase().includes('.mp4')) {
       // Handle MP4 file with possible encryption
       await handleMP4Stream(videoUrl, encryptionKey, req, res);
       return;
     }
 
-    // Check if it's an encrypted video (based on query parameter or file extension)
+    // Check if it's an encrypted video
     const isEncryptedVideo = encryptionKey || 
                             videoUrl.toLowerCase().includes('encrypted') ||
                             videoUrl.toLowerCase().includes('enc');
 
-    if (isEncryptedVideo && !videoUrl.toLowerCase().endsWith('.m3u8')) {
+    if (isEncryptedVideo && !videoUrl.toLowerCase().includes('.m3u8')) {
       // Handle other encrypted video formats
       await handleEncryptedVideo(videoUrl, encryptionKey, req, res);
       return;
@@ -34,7 +34,7 @@ app.get('/stream', async (req, res) => {
     const response = await axios.get(videoUrl, {
       headers: {
         'Referer': REFERER,
-        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0'
+        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
       }
     });
 
@@ -68,18 +68,26 @@ async function handleMP4Stream(videoUrl, encryptionKey, req, res) {
     console.log(`Streaming MP4: ${videoUrl.substring(0, 100)}...`);
     console.log(`Encryption key provided: ${encryptionKey ? 'Yes (' + encryptionKey.length + ' chars)' : 'No'}`);
     
-    const response = await axios.get(videoUrl, {
+    // Parse the full URL with all query parameters
+    const urlObj = new URL(videoUrl);
+    const fullUrl = urlObj.toString();
+    
+    const response = await axios.get(fullUrl, {
       responseType: 'stream',
       headers: {
         'Referer': REFERER,
-        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0',
-        'Range': req.headers['range'] || ''
-      }
+        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Range': req.headers['range'] || '',
+        'Accept': '*/*',
+        'Accept-Encoding': 'identity'
+      },
+      timeout: 30000
     });
 
     // Set appropriate headers
     res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'no-cache');
     
     // Copy response headers
     if (response.headers['content-length']) {
@@ -88,6 +96,10 @@ async function handleMP4Stream(videoUrl, encryptionKey, req, res) {
     if (response.headers['content-range']) {
       res.setHeader('Content-Range', response.headers['content-range']);
     }
+    if (response.headers['content-type']) {
+      res.setHeader('Content-Type', response.headers['content-type']);
+    }
+    
     if (response.status === 206) {
       res.status(206);
     }
@@ -120,17 +132,23 @@ async function handleMP4Stream(videoUrl, encryptionKey, req, res) {
             this.push(chunk);
           }
           callback();
+        },
+        flush(callback) {
+          console.log(`Decryption complete. Total bytes processed: ${bytesProcessed}`);
+          callback();
         }
       });
       
       response.data.pipe(decryptStream).pipe(res);
     } else {
       // No encryption, stream directly
+      console.log('Streaming without decryption...');
       response.data.pipe(res);
     }
 
   } catch (error) {
     console.error('Error streaming MP4:', error.message);
+    console.error('Error details:', error.response?.status, error.response?.headers);
     res.status(500).send('Failed to stream video.');
   }
 }
@@ -139,20 +157,29 @@ async function handleEncryptedVideo(videoUrl, encryptionKey, req, res) {
   try {
     console.log(`Handling encrypted video: ${videoUrl.substring(0, 100)}...`);
     
-    const response = await axios.get(videoUrl, {
+    // Parse URL to handle query parameters properly
+    const urlObj = new URL(videoUrl);
+    const fullUrl = urlObj.toString();
+    
+    console.log(`Full URL: ${fullUrl}`);
+    
+    const response = await axios.get(fullUrl, {
       responseType: 'stream',
       headers: {
         'Referer': REFERER,
-        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0',
-        'Range': req.headers['range'] || ''
-      }
+        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Range': req.headers['range'] || '',
+        'Accept': '*/*',
+        'Accept-Encoding': 'identity'
+      },
+      timeout: 30000
     });
 
-    // Detect content type from URL or headers
+    // Detect content type
     let contentType = 'video/mp4';
-    if (videoUrl.toLowerCase().endsWith('.ts')) {
+    if (videoUrl.toLowerCase().includes('.ts')) {
       contentType = 'video/mp2t';
-    } else if (videoUrl.toLowerCase().endsWith('.m4s')) {
+    } else if (videoUrl.toLowerCase().includes('.m4s')) {
       contentType = 'video/iso.segment';
     } else if (response.headers['content-type']) {
       contentType = response.headers['content-type'];
@@ -161,6 +188,7 @@ async function handleEncryptedVideo(videoUrl, encryptionKey, req, res) {
     // Set appropriate headers
     res.setHeader('Content-Type', contentType);
     res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Cache-Control', 'no-cache');
     
     // Copy response headers
     if (response.headers['content-length']) {
@@ -175,13 +203,15 @@ async function handleEncryptedVideo(videoUrl, encryptionKey, req, res) {
 
     // Apply decryption if key is provided
     if (encryptionKey && encryptionKey.length > 0) {
-      console.log('Applying XOR decryption to video stream...');
+      console.log(`Applying XOR decryption with key length: ${encryptionKey.length}`);
       
       const { Transform } = require('stream');
       
       let bytesProcessed = 0;
       const keyLength = encryptionKey.length;
       const maxDecryptBytes = Math.min(28, keyLength);
+      
+      console.log(`Will decrypt first ${maxDecryptBytes} bytes`);
       
       const decryptStream = new Transform({
         transform(chunk, encoding, callback) {
@@ -199,6 +229,10 @@ async function handleEncryptedVideo(videoUrl, encryptionKey, req, res) {
             this.push(chunk);
           }
           callback();
+        },
+        flush(callback) {
+          console.log(`Decrypted ${bytesProcessed} bytes`);
+          callback();
         }
       });
       
@@ -211,6 +245,11 @@ async function handleEncryptedVideo(videoUrl, encryptionKey, req, res) {
 
   } catch (error) {
     console.error('Error handling encrypted video:', error.message);
+    console.error('Error response:', {
+      status: error.response?.status,
+      headers: error.response?.headers,
+      data: error.response?.data?.toString().substring(0, 200)
+    });
     res.status(500).send('Failed to process encrypted video.');
   }
 }
@@ -226,11 +265,15 @@ app.get('/segment', async (req, res) => {
       responseType: 'stream',
       headers: {
         'Referer': REFERER,
-        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0'
-      }
+        'User-Agent': req.headers['user-agent'] || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': '*/*',
+        'Accept-Encoding': 'identity'
+      },
+      timeout: 15000
     });
 
     res.setHeader('Content-Type', response.headers['content-type'] || 'video/mp2t');
+    res.setHeader('Cache-Control', 'no-cache');
     
     // Apply decryption to TS segments if key is provided
     if (encryptionKey && encryptionKey.length > 0) {
@@ -272,12 +315,17 @@ app.get('/segment', async (req, res) => {
   }
 });
 
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'OK', timestamp: new Date().toISOString() });
+});
+
 app.listen(PORT, () => {
-  console.log(`Enhanced video proxy server running on http://localhost:${PORT}`);
+  console.log(`Enhanced video proxy server running on port ${PORT}`);
   console.log(`Features:`);
   console.log(`- MP4 streaming support`);
   console.log(`- XOR decryption with query parameter (url=...&key=...)`);
   console.log(`- HLS/m3u8 proxy with encryption support`);
-  console.log(`- TS segment decryption`);
+  console.log(`- Full URL query parameter preservation`);
   console.log(`Example usage: http://localhost:${PORT}/stream?url=VIDEO_URL&key=ENCRYPTION_KEY`);
 });
