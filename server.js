@@ -8,35 +8,27 @@ const REFERER = 'https://appx-play.akamai.net.in/';
 const ORIGIN  = 'https://appx-play.akamai.net.in';
 const HOST    = 'static-trans-v1.appx.co.in';
 
-/* ======================
-   XOR decrypt (28 bytes)
-====================== */
 function decrypt28(buf, key) {
   for (let i = 0; i < 28; i++) {
     buf[i] ^= (i < key.length ? key.charCodeAt(i) : i);
   }
 }
 
-/* ======================
-   Extract FULL video URL
-   (encoded OR normal)
-====================== */
 function extractVideoUrl(req) {
   const full = req.originalUrl;
 
-  // /mp4?url=XXXX&key=YYYY
   const urlMatch = full.match(/url=(.+?)(&key=|$)/);
   if (!urlMatch) return null;
 
   let rawUrl = urlMatch[1];
 
-  // auto decode if encoded
+ 
   try {
     if (rawUrl.includes('%')) {
       rawUrl = decodeURIComponent(rawUrl);
     }
   } catch (e) {
-    // ignore decode error, use raw
+    
   }
 
   return rawUrl;
@@ -70,7 +62,7 @@ app.get('/mp4', async (req, res) => {
       return res.status(403).end('Origin blocked');
     }
 
-    // Forward headers
+    
     res.status(upstream.status);
     res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Accept-Ranges', 'bytes');
@@ -79,7 +71,7 @@ app.get('/mp4', async (req, res) => {
     if (upstream.headers['content-length'])
       res.setHeader('Content-Length', upstream.headers['content-length']);
 
-    // 🔑 decrypt ONLY when stream starts from byte 0
+    
     if (!clientRange.startsWith('bytes=0')) {
       return upstream.data.pipe(res);
     }
